@@ -47,5 +47,17 @@
     "type": "bool",
     "hint": "控制台输出完整轮询日志（修改后重启AstrBot生效）",
     "default": true
+  },
+  "notify_send_image": {
+    "description": "状态/成就通知是否发送图片",
+    "type": "bool",
+    "hint": "勾选则发送开始游玩、游戏结束、成就等图片；可与「发送文本」同时勾选",
+    "default": true
+  },
+  "notify_send_text": {
+    "description": "状态/成就通知是否发送文本",
+    "type": "bool",
+    "hint": "勾选则发送文字说明；可与「发送图片」同时勾选，两项都勾选=图文一起发",
+    "default": true
   }
 }

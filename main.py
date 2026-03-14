@@ -27,7 +27,7 @@ from .superpower_util import load_abilities, get_daily_superpower  # 新增导�
     "steam_status_monitor_V2",
     "Maoer",
     "Steam状态监控插件V2版",
-    "2.2.0",
+    "2.2.1",
     "https://github.com/Maoer233/astrbot_plugin_steam_status_monitor"
 )
 class SteamStatusMonitorV2(Star):
@@ -334,6 +334,10 @@ class SteamStatusMonitorV2(Star):
             'https://www.steamgriddb.com'
         )
         self._load_push_groups()  # <--- 修复：确保push_groups属性初始化
+        self.notify_send_image = self.config.get('notify_send_image', True)
+        self.notify_send_text = self.config.get('notify_send_text', True)
+        if not self.notify_send_image and not self.notify_send_text:
+            self.notify_send_text = True
 
     async def init_poll_time_once(self):
         '''插件启动后10秒内进行一次全员初始化轮询，设置每个SteamID的next_poll_time，并输出一次初始日志'''
@@ -489,7 +493,10 @@ class SteamStatusMonitorV2(Star):
             return fallback_name or "未知游戏"
         gid = str(gameid)
         if gid in self._game_name_cache:
-            return self._game_name_cache[gid]
+            cached = self._game_name_cache[gid]
+            if isinstance(cached, tuple):
+                return cached[0] if cached else "未知游戏"
+            return cached
         # 优先查中文名（l=schinese），再查英文名（l=en）
         url_zh = f"{self.STEAM_STORE_BASE}/api/appdetails?appids={gid}&l=schinese"
         url_en = f"{self.STEAM_STORE_BASE}/api/appdetails?appids={gid}&l=en"
@@ -703,8 +710,13 @@ class SteamStatusMonitorV2(Star):
             push_session = getattr(self, 'notify_sessions', {}).get(push_gid, None)
             if push_session and push_session not in notify_sessions:
                 notify_sessions.append(push_session)
-        # 图片推送
-        if details:
+        message = f"🎉 {player_name} 在 {game_name} 中解锁了新成就!\n"
+        for achievement in achievements_to_notify:
+            message += f"• {achievement}\n"
+        if extra_count > 0:
+            message += f"...以及另外 {extra_count} 个成就"
+        tmp_path = None
+        if details and self.notify_send_image:
             unlocked_set = await self.achievement_monitor.get_player_achievements(self.API_KEY, group_id, steamid, gameid)
             if not unlocked_set:
                 key = (group_id, steamid, gameid)
@@ -716,21 +728,18 @@ class SteamStatusMonitorV2(Star):
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
                     tmp.write(img_bytes)
                     tmp_path = tmp.name
-                for session in notify_sessions:
-                    await self.context.send_message(session, MessageChain([Image.fromFileSystem(tmp_path)]))
-                return
             except Exception as e:
                 import traceback
                 logger.error(f"成就图片渲染失败: {e}\n{traceback.format_exc()}")
-        # 文本推送
-        message = f"🎉 {player_name} 在 {game_name} 中解锁了新成就!\n"
-        for achievement in achievements_to_notify:
-            message += f"• {achievement}\n"
-        if extra_count > 0:
-            message += f"...以及另外 {extra_count} 个成就"
         for session in notify_sessions:
             try:
-                await self.context.send_message(session, MessageChain([Plain(message)]))
+                msg_chain = []
+                if self.notify_send_text:
+                    msg_chain.append(Plain(message))
+                if self.notify_send_image and tmp_path:
+                    msg_chain.append(Image.fromFileSystem(tmp_path))
+                if msg_chain:
+                    await self.context.send_message(session, MessageChain(msg_chain))
             except Exception as e:
                 logger.error(f"发送成就通知失败: {e}")
 
@@ -913,6 +922,10 @@ class SteamStatusMonitorV2(Star):
             self.smart_poll_intervals = [int(x.strip()) for x in raw_intervals.split(",") if x.strip()]
         else:
             self.smart_poll_intervals = list(raw_intervals)
+        self.notify_send_image = self.config.get('notify_send_image', True)
+        self.notify_send_text = self.config.get('notify_send_text', True)
+        if not self.notify_send_image and not self.notify_send_text:
+            self.notify_send_text = True
         if hasattr(self.config, "save_config"):
             self.config.save_config()
         yield event.plain_result(f"已设置 {key} = {value}")
@@ -1227,10 +1240,17 @@ class SteamStatusMonitorV2(Star):
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
                         tmp.write(img_bytes)
                         tmp_path = tmp.name
-                    await self.context.send_message(session, MessageChain([Plain(msg), Image.fromFileSystem(tmp_path)]))
+                    msg_chain = []
+                    if self.notify_send_text:
+                        msg_chain.append(Plain(msg))
+                    if self.notify_send_image and tmp_path:
+                        msg_chain.append(Image.fromFileSystem(tmp_path))
+                    if msg_chain:
+                        await self.context.send_message(session, MessageChain(msg_chain))
                 except Exception as e:
                     logger.error(f"推送游戏结束图片失败: {e}")
-                    await self.context.send_message(session, MessageChain([Plain(msg)]))
+                    if self.notify_send_text:
+                        await self.context.send_message(session, MessageChain([Plain(msg)]))
             # 三分钟后再关闭成就轮询和清理快照
             key = (group_id, sid, gameid)
             poll_task = self.achievement_poll_tasks.pop(key, None)
@@ -1263,7 +1283,7 @@ class SteamStatusMonitorV2(Star):
             game = status.get('gameextrainfo')
             lastlogoff = status.get('lastlogoff')
             personastate = status.get('personastate', 0)
-            zh_game_name = await self.get_chinese_game_name(gameid, game) if gameid else (game or "未知游戏")
+            zh_game_name = await self.get_chinese_game_name(gameid, game) if gameid else game or "未知游戏"
             prev_gameid = prev.get('gameid') if prev else None
             current_gameid = gameid
             # --- 退出游戏（缓冲3分钟） ---
@@ -1373,10 +1393,13 @@ class SteamStatusMonitorV2(Star):
                     img_path = None
                 for session in notify_sessions:
                     try:
-                        msg_chain = [Plain(f"🟢【{name}】开始游玩 {zh_game_name}")]
-                        if img_path:
+                        msg_chain = []
+                        if self.notify_send_text:
+                            msg_chain.append(Plain(f"🟢【{name}】开始游玩 {zh_game_name}"))
+                        if self.notify_send_image and img_path:
                             msg_chain.append(Image.fromFileSystem(img_path))
-                        await self.context.send_message(session, MessageChain(msg_chain))
+                        if msg_chain:
+                            await self.context.send_message(session, MessageChain(msg_chain))
                     except Exception as e:
                         logger.error(f"推送开始游戏消息失败: {e}")
                 # 成就监控任务启动
@@ -1518,12 +1541,19 @@ class SteamStatusMonitorV2(Star):
                                 with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
                                     tmp.write(img_bytes)
                                     tmp_path = tmp.name
-                                for session in notify_sessions:
-                                    await self.context.send_message(session, MessageChain([Plain(msg), Image.fromFileSystem(tmp_path)]))
+                                msg_chain = []
+                                if self.notify_send_text:
+                                    msg_chain.append(Plain(msg))
+                                if self.notify_send_image and tmp_path:
+                                    msg_chain.append(Image.fromFileSystem(tmp_path))
+                                if msg_chain:
+                                    for session in notify_sessions:
+                                        await self.context.send_message(session, MessageChain(msg_chain))
                             except Exception as e:
                                 logger.error(f"推送游戏结束图片失败: {e}")
-                                for session in notify_sessions:
-                                    await self.context.send_message(session, MessageChain([Plain(msg)]))
+                                if self.notify_send_text:
+                                    for session in notify_sessions:
+                                        await self.context.send_message(session, MessageChain([Plain(msg)]))
                         else:
                             logger.error("未设置推送会话，无法发送消息")
                     except Exception as e:
