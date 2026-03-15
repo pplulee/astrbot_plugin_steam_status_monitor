@@ -28,7 +28,7 @@ from .superpower_util import load_abilities, get_daily_superpower  # 新增导�
     "Maoer",
     "Steam状态监控插件V2版",
     "2.2.2",
-    "https://github.com/Maoer233/astrbot_plugin_steam_status_monitor"
+    "https://github.com/pplulee/astrbot_plugin_steam_status_monitor"
 )
 class SteamStatusMonitorV2(Star):
     def _get_group_data_path(self, group_id, key):
