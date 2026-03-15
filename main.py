@@ -27,7 +27,7 @@ from .superpower_util import load_abilities, get_daily_superpower  # 新增导�
     "steam_status_monitor_V2",
     "Maoer",
     "Steam状态监控插件V2版",
-    "2.2.1",
+    "2.2.2",
     "https://github.com/Maoer233/astrbot_plugin_steam_status_monitor"
 )
 class SteamStatusMonitorV2(Star):
@@ -325,8 +325,8 @@ class SteamStatusMonitorV2(Star):
                     self.running_groups.add(group_id)
         # --- 新增：全局日志收集与统一输出 ---
         self._last_round_logs = []  # [(group_id, logstr)]
-        asyncio.create_task(self.global_poll_and_log_loop())
-        asyncio.create_task(self.init_poll_time_once())
+        self._global_poll_task = asyncio.create_task(self.global_poll_and_log_loop())
+        self._init_poll_task = asyncio.create_task(self.init_poll_time_once())
         # SGDB API Key 可在 https://www.steamgriddb.com/profile/preferences/api 获取
         self.SGDB_API_KEY = self.config.get('sgdb_api_key', '')
         self.SGDB_API_BASE = self._normalize_base_url(
@@ -341,7 +341,11 @@ class SteamStatusMonitorV2(Star):
 
     async def init_poll_time_once(self):
         '''插件启动后10秒内进行一次全员初始化轮询，设置每个SteamID的next_poll_time，并输出一次初始日志'''
-        await asyncio.sleep(10)
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            logger.info("[SteamStatusMonitor] 初始化轮询已取消")
+            return
         all_logs = []
         for group_id in self.group_steam_ids:
             steam_ids = self.group_steam_ids[group_id]
@@ -357,57 +361,71 @@ class SteamStatusMonitorV2(Star):
 
     async def global_poll_and_log_loop(self):
         '''全局定时并发查询所有群Steam状态，按动态间隔判断是否需要查询，40秒统一输出日志'''
-        while True:
-            # 计算距离下一个整分钟0秒的秒数
-            now = time.time()
-            next_minute = (int(now) // 60 + 1) * 60
-            await asyncio.sleep(max(0, next_minute - now))
-            # 0秒：遍历所有群和SteamID，按动态间隔判断是否需要查询
-            group_ids = list(self.group_steam_ids.keys())
-            poll_tasks = []
-            for group_id in group_ids:
-                if not self.group_monitor_enabled.get(group_id, True):
-                    continue
-                steam_ids = self.group_steam_ids.get(group_id, [])
-                next_poll = self.next_poll_time.setdefault(group_id, {})
-                now2 = time.time()
-                # 只查询到点的SteamID
-                sids_to_query = [sid for sid in steam_ids if now2 >= next_poll.get(sid, 0)]
-                if not sids_to_query:
-                    continue
-                async def query_one_group(gid, sids):
-                    round_msg_lines = []
-                    tasks = [self.check_status_change(gid, single_sid=sid) for sid in sids]
-                    if tasks:
-                        results = await asyncio.gather(*tasks)
-                        for msg in results:
-                            if msg:
-                                round_msg_lines.append(msg)
-                    if round_msg_lines:
-                        self._last_round_logs.append((gid, "\n".join(round_msg_lines)))
-                poll_tasks.append(query_one_group(group_id, sids_to_query))
-            if poll_tasks:
-                await asyncio.gather(*poll_tasks)
-            # 40秒统一输出日志
-            await asyncio.sleep(40)
-            if self._last_round_logs:
-                if self.detailed_poll_log:
-                    all_logs = []
-                    for group_id, logstr in self._last_round_logs:
-                        all_logs.append(f"群{group_id}：\n" + logstr)
-                    logger.info("====== Steam状态监控轮询日志 ======\n" + "\n".join(all_logs) + "\n=====================================================")
-                else:
-                    logger.info("周期轮询成功")
-                self._last_round_logs.clear()
+        try:
+            while True:
+                # 计算距离下一个整分钟0秒的秒数
+                now = time.time()
+                next_minute = (int(now) // 60 + 1) * 60
+                await asyncio.sleep(max(0, next_minute - now))
+                # 0秒：遍历所有群和SteamID，按动态间隔判断是否需要查询
+                group_ids = list(self.group_steam_ids.keys())
+                poll_tasks = []
+                for group_id in group_ids:
+                    if not self.group_monitor_enabled.get(group_id, True):
+                        continue
+                    steam_ids = self.group_steam_ids.get(group_id, [])
+                    next_poll = self.next_poll_time.setdefault(group_id, {})
+                    now2 = time.time()
+                    # 只查询到点的SteamID
+                    sids_to_query = [sid for sid in steam_ids if now2 >= next_poll.get(sid, 0)]
+                    if not sids_to_query:
+                        continue
+                    async def query_one_group(gid, sids):
+                        round_msg_lines = []
+                        tasks = [self.check_status_change(gid, single_sid=sid) for sid in sids]
+                        if tasks:
+                            results = await asyncio.gather(*tasks)
+                            for msg in results:
+                                if msg:
+                                    round_msg_lines.append(msg)
+                        if round_msg_lines:
+                            self._last_round_logs.append((gid, "\n".join(round_msg_lines)))
+                    poll_tasks.append(query_one_group(group_id, sids_to_query))
+                if poll_tasks:
+                    await asyncio.gather(*poll_tasks)
+                # 40秒统一输出日志
+                await asyncio.sleep(40)
+                if self._last_round_logs:
+                    if self.detailed_poll_log:
+                        all_logs = []
+                        for group_id, logstr in self._last_round_logs:
+                            all_logs.append(f"群{group_id}：\n" + logstr)
+                        logger.info("====== Steam状态监控轮询日志 ======\n" + "\n".join(all_logs) + "\n=====================================================")
+                    else:
+                        logger.info("周期轮询成功")
+                    self._last_round_logs.clear()
+        except asyncio.CancelledError:
+            logger.info("[SteamStatusMonitor] 全局轮询循环已停止")
+            raise
 
     async def terminate(self):
-        '''插件被卸载/停用时自动保存持久化数据'''
-        self._save_persistent_data()
+        '''插件被卸载/停用时自动保存持久化数据，并取消所有后台任务'''
+        self._ssm_running = False
+        # 停止全局轮询与初始化任务（避免重载/更新配置后旧进程不退出）
+        for attr in ("_global_poll_task", "_init_poll_task"):
+            task = getattr(self, attr, None)
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
         # 停止所有成就定时任务
         for task in self.achievement_poll_tasks.values():
             task.cancel()
         self.achievement_poll_tasks.clear()
         self.achievement_snapshots.clear()
+        self._save_persistent_data()
 
     def crop_image_auto(self, img_path_or_bytes, bg_color=(20,26,33), threshold=25):
         """
